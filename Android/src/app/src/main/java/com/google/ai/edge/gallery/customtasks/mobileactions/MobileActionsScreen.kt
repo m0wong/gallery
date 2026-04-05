@@ -77,6 +77,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -573,9 +574,9 @@ fun MainUi(
                   }
                 },
                 modifier = Modifier.weight(1f),
-              ) {
+              ) { targetTabIndex ->
                 // Model response.
-                if (selectedTabIndex == 0) {
+                if (targetTabIndex == 0) {
                   Column(modifier = Modifier.fillMaxWidth()) {
                     val cdResponse = stringResource(R.string.cd_model_response_text)
                     MarkdownText(
@@ -601,7 +602,7 @@ fun MainUi(
                   }
                 }
                 // Function called.
-                else if (selectedTabIndex == 1) {
+                else if (targetTabIndex == 1) {
                   Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
