@@ -41,6 +41,7 @@ import com.google.ai.edge.gallery.data.EMPTY_MODEL
 import com.google.ai.edge.gallery.data.IMPORTS_DIR
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.ModelAllowlist
+import com.google.ai.edge.gallery.data.ModelCapability
 import com.google.ai.edge.gallery.data.ModelDownloadStatus
 import com.google.ai.edge.gallery.data.ModelDownloadStatusType
 import com.google.ai.edge.gallery.data.NumberSliderConfig
@@ -196,7 +197,11 @@ constructor(
 ) : ViewModel() {
   private val externalFilesDir = context.getExternalFilesDir(null)
   protected val _uiState = MutableStateFlow(createEmptyUiState())
-  val uiState = _uiState.asStateFlow()
+  open val uiState = _uiState.asStateFlow()
+
+  private var _allowlistModels: MutableList<Model> = mutableListOf()
+  val allowlistModels: List<Model>
+    get() = _allowlistModels
 
   val authService = AuthorizationService(context)
   var curAccessToken: String = ""
@@ -278,7 +283,7 @@ constructor(
     }
   }
 
-  fun downloadModel(task: Task?, model: Model) {
+  open fun downloadModel(task: Task?, model: Model) {
     // Update status.
     setDownloadStatus(
       curModel = model,
@@ -348,6 +353,16 @@ constructor(
   }
 
   fun deleteModel(model: Model) {
+    // If the currently downloaded model is an updatable version, reset the model to its latest
+    // version and mark it as not updatable upon deletion.
+    if (model.updatable) {
+      model.updatable = false
+      model.latestModelFile?.let {
+        model.version = it.commitHash
+        model.downloadFileName = it.fileName
+      }
+    }
+
     if (model.imported) {
       deleteFilesFromImportDir(model.downloadFileName)
     } else {
@@ -874,6 +889,9 @@ constructor(
 
     viewModelScope.launch(Dispatchers.IO) {
       try {
+        // Clear existing allowlist models.
+        _allowlistModels.clear()
+
         // Load model allowlist json.
         var modelAllowlist: ModelAllowlist? = null
 
@@ -960,6 +978,7 @@ constructor(
           }
 
           val model = allowedModel.toModel()
+          _allowlistModels.add(model)
           nameToModel.put(model.name, model)
           for (taskType in allowedModel.taskTypes) {
             val task = curTasks.find { it.id == taskType }
@@ -1194,7 +1213,21 @@ constructor(
         llmSupportAudio = llmSupportAudio,
         llmSupportTinyGarden = llmSupportTinyGarden,
         llmSupportMobileActions = llmSupportMobileActions,
-        llmSupportThinking = llmSupportThinking,
+        capabilities =
+          if (llmSupportThinking) listOf(ModelCapability.LLM_THINKING) else emptyList(),
+        capabilityToTaskTypes =
+          if (llmSupportThinking) {
+            mapOf(
+              ModelCapability.LLM_THINKING to
+                listOf(
+                  BuiltInTaskId.LLM_CHAT,
+                  BuiltInTaskId.LLM_ASK_IMAGE,
+                  BuiltInTaskId.LLM_ASK_AUDIO,
+                )
+            )
+          } else {
+            emptyMap()
+          },
         llmMaxToken = llmMaxToken,
         accelerators = accelerators,
         // We assume all imported models are LLM for now.
@@ -1384,12 +1417,37 @@ constructor(
     _uiState.update { newUiState }
   }
 
-  private fun isModelDownloaded(model: Model): Boolean {
+  @androidx.annotation.VisibleForTesting
+  fun isModelDownloaded(model: Model): Boolean {
+    model.updatable = false
+    // First, check if the model with the current (latest) version has been downloaded.
+    if (checkIfModelDownloaded(model, model.version)) return true
+
+    // If not, check if any updatable model file (previous version) has been downloaded.
+    for (updatableFile in model.updatableModelFiles) {
+      if (updatableFile.commitHash.isEmpty()) continue
+      if (checkIfModelDownloaded(model, updatableFile.commitHash, updatableFile.fileName)) {
+        // If an updatable version is found on the device, update the model's version and file name
+        // to match the downloaded one, and mark it as updatable.
+        model.version = updatableFile.commitHash
+        model.downloadFileName = updatableFile.fileName
+        model.updatable = true
+        return true
+      }
+    }
+
+    return false
+  }
+
+  private fun checkIfModelDownloaded(
+    model: Model,
+    version: String,
+    fileName: String = model.downloadFileName,
+  ): Boolean {
     val modelRelativePath =
-      listOf(model.normalizedName, model.version, model.downloadFileName)
-        .joinToString(File.separator)
+      listOf(model.normalizedName, version, fileName).joinToString(File.separator)
     val downloadedFileExists =
-      model.downloadFileName.isNotEmpty() &&
+      fileName.isNotEmpty() &&
         ((model.localModelFilePathOverride.isEmpty() &&
           isFileInExternalFilesDir(modelRelativePath)) ||
           (model.localModelFilePathOverride.isNotEmpty() &&
@@ -1399,7 +1457,7 @@ constructor(
       model.isZip &&
         model.unzipDir.isNotEmpty() &&
         isFileInExternalFilesDir(
-          listOf(model.normalizedName, model.version, model.unzipDir).joinToString(File.separator)
+          listOf(model.normalizedName, version, model.unzipDir).joinToString(File.separator)
         )
 
     return downloadedFileExists || unzippedDirectoryExists
